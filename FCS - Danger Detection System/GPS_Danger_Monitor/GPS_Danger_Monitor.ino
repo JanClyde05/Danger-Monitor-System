@@ -31,6 +31,9 @@ static const int    GPS_RX   = 16;
 static const int    GPS_TX   = 17;
 static const uint32_t GPS_BAUD = 9600;
 
+/* ── Device token – must match an entry in Receiver_Profile.html ── */
+const char*  DEVICE_TOKEN = "DM-001";           // ← change per device
+
 const char*  AP_SSID    = "GPS Danger Monitor";
 const char*  AP_PASS    = "";
 IPAddress    apIP       (192,168,4,1);
@@ -185,14 +188,15 @@ void pushEnvSample(float mag, float r, float p){
 
 /* ══════════════════════ NRF Send ════════════════════════════ */
 /*
- * Payload format:  "LAT,LNG"  (e.g. "14.599512,120.984222")
- * The receiver will construct the full Netlify URL from this.
+ * Payload format:  "TOKEN,LAT,LNG"  (e.g. "DM-001,14.599512,120.984222")
+ * The receiver splits on the first comma to extract the token, then uses
+ * the remainder as the loc= parameter in the Netlify URL.
  */
 bool nrfSendCoords(float lat, float lng, const String& reason){
   if(!nrfReady) return false;
 
   char buf[NRF_PAYLOAD] = {0};
-  String coord = String(lat,6) + "," + String(lng,6);
+  String coord = String(DEVICE_TOKEN) + "," + String(lat,6) + "," + String(lng,6);
   coord.toCharArray(buf, NRF_PAYLOAD);
 
   bool ok = radio.write(buf, NRF_PAYLOAD);
@@ -454,6 +458,10 @@ void loop(){
       if(on) buzzerOn(3000); else buzzerOff();
       sosNextChange = millis() + SOS_STEPS[sosIdx].ms;
     }
+  } else if(!armed && alertActive){
+    stopSOSAlert();
+  }
+}
   } else if(!armed && alertActive){
     stopSOSAlert();
   }

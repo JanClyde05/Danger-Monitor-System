@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPS Danger Monitor – Emergency Response</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    /* ═══════════════════════════════════════════════
+       DESIGN TOKENS
+    ═══════════════════════════════════════════════ */
+    :root {
+      --bg:          #060c18;
+      --surface:     #0c1527;
+      --surface-2:   #111e36;
+      --border:      rgba(255,255,255,0.07);
+      --accent:      #ff5f40;
+      --accent-dim:  rgba(255,95,64,0.12);
+      --blue:        #4d7cff;
+      --blue-dim:    rgba(77,124,255,0.12);
+      --ok:          #3ecf8e;
+      --ok-dim:      rgba(62,207,142,0.12);
+      --warn:        #f5a623;
+      --text:        #e8f0ff;
+      --muted:       #5a7299;
+      --mono:        'Space Mono', monospace;
+      --sans:        'DM Sans', sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Noise overlay ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+    }
+
+    /* ── Grid scanlines on bg ── */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(77,124,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(77,124,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    #app { position: relative; z-index: 1; }
+
+    /* ═══════════════════════════════════════════════
+       SHARED COMPONENTS
+    ═══════════════════════════════════════════════ */
+    .page { display: none; animation: fadeUp 0.4s ease both; }
+    .page.active { display: block; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .tag {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--mono);
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 1px; text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 4px;
+    }
+    .tag-accent { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(255,95,64,0.25); }
+    .tag-blue   { background: var(--blue-dim);   color: var(--blue);   border: 1px solid rgba(77,124,255,0.25); }
+    .tag-ok     { background: var(--ok-dim);     color: var(--ok);     border: 1px solid rgba(62,207,142,0.25); }
+    .tag-warn   { background: rgba(245,166,35,0.12); color: var(--warn); border: 1px solid rgba(245,166,35,0.25); }
+
+    /* ═══════════════════════════════════════════════
+       TOP NAV
+    ═══════════════════════════════════════════════ */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(6,12,24,0.85);
+      backdrop-filter: blur(16px);
+      position: sticky; top: 0; z-index: 100;
+    }
+
+    .nav-brand {
+      display: flex; align-items: center; gap: 10px;
+      font-family: var(--mono); font-size: 13px; font-weight: 700;
+      color: var(--text); text-decoration: none;
+      cursor: pointer;
+    }
+    .nav-brand:hover { color: var(--blue); }
+
+    .shield-icon {
+      width: 28px; height: 28px;
+      background: var(--blue-dim);
+      border: 1px solid rgba(77,124,255,0.3);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .pulse-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 8px var(--ok);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.6; transform: scale(0.85); }
+    }
+
+    /* ═══════════════════════════════════════════════
+       HOME PAGE
+    ═══════════════════════════════════════════════ */
+    .home-hero {
+      max-width: 960px; margin: 0 auto;
+      padding: 60px 24px 40px;
+    }
+
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--mono); font-size: 10px; letter-spacing: 1.5px;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 20px;
+    }
+    .hero-badge::before {
+      content: '';
+      display: block; width: 20px; height: 1px;
+      background: var(--accent);
+    }
+
+    .hero-title {
+      font-size: clamp(28px, 5vw, 48px);
+      font-weight: 800; line-height: 1.15;
+      margin-bottom: 14px;
+      letter-spacing: -0.5px;
+    }
+    .hero-title .hl { color: var(--blue); }
+
+    .hero-desc {
+      font-size: 15px; color: var(--muted);
+      max-width: 540px; line-height: 1.7;
+      margin-bottom: 36px;
+    }
+
+    .stats-row {
+      display: flex; gap: 24px; flex-wrap: wrap;
+      margin-bottom: 48px;
+    }
+    .stat {
+      display: flex; flex-direction: column;
+    }
+    .stat-val {
+      font-family: var(--mono); font-size: 28px; font-weight: 700;
+      color: var(--text);
+    }
+    .stat-val span { color: var(--blue); }
+    .stat-lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Device grid ── */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      max-width: 960px; margin: 0 auto 16px;
+      padding: 0 24px;
+    }
+    .section-title {
+      font-family: var(--mono); font-size: 11px; letter-spacing: 2px;
+      text-transform: uppercase; color: var(--muted);
+    }
+
+    .device-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 14px;
+      max-width: 960px; margin: 0 auto;
+      padding: 0 24px 60px;
+    }
+
+    .device-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .device-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, var(--blue), transparent);
+      opacity: 0; transition: opacity 0.2s;
+    }
+    .device-card:hover {
+      border-color: rgba(77,124,255,0.4);
+      transform: translateY(-2px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    }
+    .device-card:hover::before { opacity: 1; }
+
+    .device-card-top {
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 16px;
+    }
+    .device-avatar {
+      width: 48px; height: 48px; border-radius: 12px;
+      object-fit: cover;
+      border: 2px solid var(--border);
+      background: var(--surface-2);
+      flex-shrink: 0;
+    }
+    .device-name { font-size: 15px; font-weight: 700; line-height: 1.3; }
+    .device-role { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    .device-card-meta {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .meta-row {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px;
+    }
+    .meta-label { color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: 0.5px; }
+    .meta-val   { color: var(--text); font-weight: 600; font-family: var(--mono); font-size: 11px; }
+
+    /* ═══════════════════════════════════════════════
+       EMERGENCY PROFILE PAGE
+    ═══════════════════════════════════════════════ */
+    .emergency-wrap {
+      max-width: 600px; margin: 0 auto;
+      padding: 30px 20px 60px;
+    }
+
+    /* Alert banner */
+    .alert-banner {
+      background: linear-gradient(135deg, #7f1d1d, #991b1b);
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: 14px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      display: flex; align-items: center; gap: 14px;
+      box-shadow: 0 0 40px rgba(239,68,68,0.2);
+      animation: alertPulse 2s ease-in-out infinite;
+    }
+    @keyframes alertPulse {
+      0%, 100% { box-shadow: 0 0 40px rgba(239,68,68,0.2); }
+      50%       { box-shadow: 0 0 60px rgba(239,68,68,0.4); }
+    }
+    .alert-icon {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: rgba(239,68,68,0.3);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      font-size: 20px;
+    }
+    .alert-text { flex: 1; }
+    .alert-title {
+      font-family: var(--mono); font-size: 13px; font-weight: 700;
+      letter-spacing: 1px; text-transform: uppercase;
+      color: #fca5a5;
+    }
+    .alert-sub { font-size: 12px; color: rgba(252,165,165,0.6); margin-top: 2px; }
+
+    /* Profile card */
+    .profile-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px;
+      margin-bottom: 14px;
+    }
+
+    .profile-header {
+      display: flex; align-items: center; gap: 18px;
+      margin-bottom: 24px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .profile-pfp {
+      width: 80px; height: 80px; border-radius: 16px;
+      object-fit: cover;
+      border: 2px solid rgba(77,124,255,0.4);
+      background: var(--surface-2);
+      flex-shrink: 0;
+    }
+    .profile-name { font-size: 20px; font-weight: 800; line-height: 1.2; }
+    .profile-role { font-size: 13px; color: var(--muted); margin-top: 4px; }
+    .profile-token {
+      font-family: var(--mono); font-size: 10px;
+      color: var(--blue); margin-top: 8px;
+      background: var(--blue-dim);
+      padding: 3px 8px; border-radius: 4px;
+      display: inline-block;
+    }
+
+    /* Medical grid */
+    .med-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px; margin-bottom: 20px;
+    }
+    .med-item {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .med-label {
+      font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 6px; display: block;
+    }
+    .med-val { font-size: 14px; font-weight: 600; }
+
+    /* Location box */
+    .loc-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px;
+      text-align: center;
+      margin-bottom: 14px;
+    }
+    .loc-icon {
+      width: 48px; height: 48px; border-radius: 12px;
+      background: var(--accent-dim);
+      border: 1px solid rgba(255,95,64,0.2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      margin: 0 auto 14px;
+    }
+    .loc-status {
+      font-size: 14px; font-weight: 600; margin-bottom: 6px;
+      color: var(--ok);
+    }
+    .loc-coords {
+      font-family: var(--mono); font-size: 12px;
+      color: var(--muted); margin-bottom: 16px;
+      word-break: break-all;
+    }
+
+    .btn-maps {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      background: var(--accent);
+      color: white; text-decoration: none;
+      padding: 14px 20px; border-radius: 12px;
+      font-weight: 700; font-size: 14px;
+      transition: background 0.15s, transform 0.1s;
+      border: none; cursor: pointer; width: 100%;
+    }
+    .btn-maps:hover { background: #e04e30; transform: scale(1.01); }
+
+    .no-loc {
+      font-size: 14px; color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    /* Token not found */
+    .not-found {
+      max-width: 400px; margin: 80px auto;
+      padding: 0 24px; text-align: center;
+    }
+    .not-found-icon { font-size: 48px; margin-bottom: 20px; }
+    .not-found h2 { font-size: 22px; font-weight: 800; margin-bottom: 10px; }
+    .not-found p  { font-size: 14px; color: var(--muted); line-height: 1.7; }
+    .btn-back {
+      display: inline-flex; align-items: center; gap: 8px;
+      margin-top: 24px; padding: 12px 20px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text);
+      font-weight: 600; font-size: 14px;
+      cursor: pointer; transition: border-color 0.2s;
+      text-decoration: none;
+    }
+    .btn-back:hover { border-color: var(--blue); }
+
+    /* ── Responsive ── */
+    @media (max-width: 480px) {
+      .med-grid { grid-template-columns: 1fr; }
+      .profile-header { flex-direction: column; text-align: center; }
+      .profile-token { display: block; text-align: center; }
+      .stats-row { gap: 16px; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ══════════ TOP NAV ══════════ -->
+  <nav>
+    <div class="nav-brand" onclick="goHome()">
+      <div class="shield-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="#4d7cff" stroke-width="2.2" stroke-linecap="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      GPS DANGER MONITOR
+    </div>
+    <div class="nav-right">
+      <div class="pulse-dot"></div>
+      <span class="tag tag-blue">SYSTEM ONLINE</span>
+    </div>
+  </nav>
+
+  <!-- ══════════ HOME PAGE ══════════ -->
+  <div id="page-home" class="page">
+    <div class="home-hero">
+      <div class="hero-badge">Road Safety Network</div>
+      <h1 class="hero-title">
+        Emergency<br>
+        <span class="hl">Response Portal</span>
+      </h1>
+      <p class="hero-desc">
+        Real-time accident detection and GPS tracking system. Each registered
+        device broadcasts alerts via NRF24L01 repeater nodes deployed every 90 m
+        along road corridors.
+      </p>
+      <div class="stats-row">
+        <div class="stat">
+          <span class="stat-val" id="stat-devices">0<span>x</span></span>
+          <span class="stat-lbl">Registered Devices</span>
+        </div>
+        <div class="stat">
+          <span class="stat-val">90<span>m</span></span>
+          <span class="stat-lbl">Repeater Spacing</span>
+        </div>
+        <div class="stat">
+          <span class="stat-val">NRF<span>+</span></span>
+          <span class="stat-lbl">RF Protocol</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <span class="section-title">// Registered Devices</span>
+      <span class="tag tag-ok" id="active-count">— Active</span>
+    </div>
+
+    <div class="device-grid" id="device-grid">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+
+  <!-- ══════════ EMERGENCY PROFILE PAGE ══════════ -->
+  <div id="page-profile" class="page">
+    <div class="emergency-wrap">
+
+      <div class="alert-banner">
+        <div class="alert-icon">⚠️</div>
+        <div class="alert-text">
+          <div class="alert-title">Accident Detection Alert</div>
+          <div class="alert-sub" id="alert-timestamp">Receiving coordinates…</div>
+        </div>
+      </div>
+
+      <div class="profile-card">
+        <div class="profile-header">
+          <img id="p-pfp" class="profile-pfp" src="" alt="Profile" />
+          <div>
+            <div class="profile-name" id="p-name">—</div>
+            <div class="profile-role" id="p-role">—</div>
+            <div class="profile-token" id="p-token">TOKEN: —</div>
+          </div>
+        </div>
+
+        <div class="med-grid">
+          <div class="med-item">
+            <span class="med-label">Blood Type</span>
+            <span class="med-val" id="p-blood">—</span>
+          </div>
+          <div class="med-item">
+            <span class="med-label">Allergies</span>
+            <span class="med-val" id="p-allergies">—</span>
+          </div>
+          <div class="med-item">
+            <span class="med-label">Emergency Contact</span>
+            <span class="med-val" id="p-contact">—</span>
+          </div>
+          <div class="med-item">
+            <span class="med-label">Medical Notes</span>
+            <span class="med-val" id="p-notes">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Location -->
+      <div class="loc-card">
+        <div class="loc-icon">📍</div>
+        <div class="loc-status" id="loc-status">Detecting Coordinates…</div>
+        <div class="loc-coords" id="loc-coords"></div>
+        <a id="maps-link" href="#" target="_blank" class="btn-maps" style="display:none;">
+          🗺 VIEW ON GOOGLE MAPS
+        </a>
+        <div class="no-loc" id="no-loc" style="display:none;">No location data in this alert.</div>
+      </div>
+
+      <button class="btn-back" onclick="goHome()">← Back to Device List</button>
+    </div>
+  </div>
+
+  <!-- ══════════ TOKEN NOT FOUND ══════════ -->
+  <div id="page-notfound" class="page">
+    <div class="not-found">
+      <div class="not-found-icon">🔍</div>
+      <h2>Token Not Registered</h2>
+      <p>
+        The device token in this URL (<code id="bad-token" style="color:var(--accent);font-family:var(--mono)"></code>)
+        does not match any registered profile.<br><br>
+        Make sure the transmitter token is added to the <code>PROFILES</code> list in this file.
+      </p>
+      <a class="btn-back" onclick="goHome()">← Return to Home</a>
+    </div>
+  </div>
+
+</div><!-- #app -->
+
+<script>
+/* ╔══════════════════════════════════════════════════════════╗
+   ║              REGISTERED DEVICE PROFILES                  ║
+   ║  ── ADD / EDIT ENTRIES HERE ──────────────────────────── ║
+   ║                                                          ║
+   ║  token      : MUST match TOKEN defined in the .ino file  ║
+   ║  avatar     : URL or relative path to a profile image    ║
+   ║  name       : Full name of the device owner              ║
+   ║  role       : Short description / role                   ║
+   ║  blood      : Blood type                                 ║
+   ║  allergies  : Known allergies or "None"                  ║
+   ║  contact    : Emergency contact number                   ║
+   ║  notes      : Medical notes                              ║
+   ╚══════════════════════════════════════════════════════════╝ */
+
+const PROFILES = [
+
+  /* ── DEVICE 01 ─────────────────────────────────────────── */
+  {
+    token:     "DM-001",                           // ← token in transmitter .ino
+    avatar:    "https://lh3.googleusercontent.com/d/1GzdYF2HAY8i-coJ3cnVi0o2fmXMfKlle",
+    name:      "Jan Clyde Talosig",                // ← edit name
+    role:      "Electronics & Communications Engineering",// ← edit role
+    blood:     "B+",
+    allergies: "None",
+    contact:   "+63 9XX XXX XXXX",
+    notes:     "No history of heart disease",
+  },
+
+  /* ── DEVICE 02 ─────────────────────────────────────────── */
+  {
+    token:     "DM-002",
+    avatar:    "https://lh3.googleusercontent.com/d/138ZbZxws-Jqh-539O-SImN6PVVfdqBk6",  // ← replace with real photo URL
+    name:      "James Laurence Guzman",             // ← edit name
+    role:      "Electronics & Communications Engineering",                        // ← edit role
+    blood:     "O+",
+    allergies: "Skin Allergies",
+    contact:   "+63 9XX XXX XXXX",
+    notes:     "No known conditions",
+  },
+
+  /* ── DEVICE 03 ─────────────────────────────────────────── */
+  {
+    token:     "DM-003",
+    avatar:    "https://lh3.googleusercontent.com/d/1bTt_efj4Q4kWg2pDSttewCChCAoNhwUo",
+    name:      "Kaye Angelique Aquino",
+    role:      "Electronics & Communications Engineering",
+    blood:     "A+",
+    allergies: "None",
+    contact:   "+63 9XX XXX XXXX",
+    notes:     "No known conditions",
+  },
+
+  /* ── DEVICE 04 ─────────────────────────────────────────── */
+  {
+    token:     "DM-004",
+    avatar:    "https://lh3.googleusercontent.com/d/1ESywrBz0oHeJKoWLNdvtblxaudwwMJAA",
+    name:      "Shamel Alliyah Senson",
+    role:      "Electronics & Communications Engineering",
+    blood:     "AB+",
+    allergies: "None",
+    contact:   "+63 9XX XXX XXXX",
+    notes:     "No known conditions",
+  },
+
+  /* ── DEVICE 05 ─────────────────────────────────────────── */
+  {
+    token:     "DM-005",
+    avatar:    "https://lh3.googleusercontent.com/d/1zByUZ9j73TQ8cmzqmUBKvrYHfMbLIVs9",
+    name:      "Zarina Marie Aguilar",
+    role:      "Electronics & Communications Engineering",
+    blood:     "AB+",
+    allergies: "None",
+    contact:   "+63 9XX XXX XXXX",
+    notes:     "Have history of heart complications",
+  },
+
+	
+  /* ── ADD MORE DEVICES BELOW THIS LINE ──────────────────── */
+  /* Copy and paste a block from above, then edit the fields. */
+
+
+];
+
+/* ══════════════════════════════════════════════════════════
+   ROUTER – reads URL params and decides which page to show
+   URL formats supported:
+     /?token=DM-001&loc=14.599,120.984   (new token + loc format)
+     /?loc=14.599,120.984                (legacy – shows first profile)
+══════════════════════════════════════════════════════════ */
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function goHome() {
+  history.replaceState({}, '', window.location.pathname);
+  showPage('page-home');
+}
+
+function buildHomePage() {
+  const grid = document.getElementById('device-grid');
+  document.getElementById('stat-devices').innerHTML =
+    PROFILES.length + '<span>x</span>';
+  document.getElementById('active-count').textContent =
+    PROFILES.length + ' Active';
+
+  grid.innerHTML = '';
+  PROFILES.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'device-card';
+    card.innerHTML = `
+      <div class="device-card-top">
+        <img class="device-avatar" src="${p.avatar}" alt="${p.name}"
+             onerror="this.src='https://placehold.co/48x48/111e36/4d7cff?text=?'" />
+        <div>
+          <div class="device-name">${p.name}</div>
+          <div class="device-role">${p.role}</div>
+        </div>
+      </div>
+      <div class="device-card-meta">
+        <div class="meta-row">
+          <span class="meta-label">TOKEN</span>
+          <span class="meta-val">${p.token}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">BLOOD TYPE</span>
+          <span class="meta-val">${p.blood}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">CONTACT</span>
+          <span class="meta-val">${p.contact}</span>
+        </div>
+      </div>`;
+    card.onclick = () => renderProfile(p, null);
+    grid.appendChild(card);
+  });
+}
+
+function renderProfile(profile, loc) {
+  /* Fill profile fields */
+  document.getElementById('p-pfp').src          = profile.avatar;
+  document.getElementById('p-pfp').onerror      = () => {
+    document.getElementById('p-pfp').src = 'https://placehold.co/80x80/111e36/4d7cff?text=?';
+  };
+  document.getElementById('p-name').textContent     = profile.name;
+  document.getElementById('p-role').textContent     = profile.role;
+  document.getElementById('p-token').textContent    = 'TOKEN: ' + profile.token;
+  document.getElementById('p-blood').textContent    = profile.blood;
+  document.getElementById('p-allergies').textContent= profile.allergies;
+  document.getElementById('p-contact').textContent  = profile.contact;
+  document.getElementById('p-notes').textContent    = profile.notes;
+
+  /* Timestamp */
+  const now = new Date();
+  document.getElementById('alert-timestamp').textContent =
+    'Alert received: ' + now.toLocaleString();
+
+  /* Location */
+  const locStatus  = document.getElementById('loc-status');
+  const locCoords  = document.getElementById('loc-coords');
+  const mapsLink   = document.getElementById('maps-link');
+  const noLoc      = document.getElementById('no-loc');
+
+  if (loc && loc.indexOf(',') > 0) {
+    locStatus.textContent   = 'Live Location Received';
+    locCoords.textContent   = loc;
+    mapsLink.href           = 'https://www.google.com/maps?q=' + loc;
+    mapsLink.style.display  = 'flex';
+    noLoc.style.display     = 'none';
+  } else {
+    locStatus.textContent   = 'No Location Data';
+    locStatus.style.color   = 'var(--warn)';
+    locCoords.textContent   = '';
+    mapsLink.style.display  = 'none';
+    noLoc.style.display     = 'block';
+  }
+
+  showPage('page-profile');
+}
+
+/* ── Main router ── */
+function route() {
+  const params  = new URLSearchParams(window.location.search);
+  const token   = params.get('token');
+  const loc     = params.get('loc');
+
+  if (!token && !loc) {
+    /* No params → homepage */
+    buildHomePage();
+    showPage('page-home');
+    return;
+  }
+
+  if (!token && loc) {
+    /* Legacy: ?loc=LAT,LNG only → show first profile */
+    renderProfile(PROFILES[0], loc);
+    return;
+  }
+
+  /* Token-based routing */
+  const profile = PROFILES.find(p => p.token === token);
+  if (profile) {
+    renderProfile(profile, loc);
+  } else {
+    document.getElementById('bad-token').textContent = token;
+    showPage('page-notfound');
+  }
+}
+
+route();
+</script>
+</body>
+</html>
