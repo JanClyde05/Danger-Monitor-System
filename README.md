@@ -1,461 +1,571 @@
-# SHM SYSTEM – FULL CODE DOCUMENTATION (LLM DESCRIPTION)
-
-### Structural Health Monitoring Firmware v2 (ESP32-S3) - By: Jan Clyde T. Talosig
-
+# GPS Danger Monitor System – Full Code Documentation (v2.0)
+BY: JAN CLYDE T. TALOSIG
 ---
 
 # 1. SYSTEM OVERVIEW
 
 ## 1.1 Purpose
 
-This system is a **real-time Structural Health Monitoring (SHM) platform** that:
+The system is a **wearable/embedded safety monitor** that detects:
 
-* Reads vibration data from **3 MPU6050 sensors (X, Y, Z axes)**
-* Processes signals using **RMS + FFT**
-* Visualizes data in a **3D heatmap dashboard**
-* Logs all data into **CSV (LittleFS)**
-* Detects anomalies (vibration-based)
+* Human falls (high confidence)
+* Environmental hazards (ground shock / instability)
+
+It then:
+
+1. Gets GPS coordinates
+2. Sends them via NRF24L01
+3. Triggers an SOS alert (LED + buzzer)
+4. Opens a web-based emergency profile via HID receiver
 
 ---
 
-## 1.2 System Architecture
+## 1.2 System Components
 
-```
-MPU6050 (3x) → ESP32-S3 → FreeRTOS Tasks → Processing → Web UI + CSV Logging
-```
+### Transmitter (ESP32)
+
+* Sensors:
+
+  * MPU-6050 (motion)
+  * GPS (TinyGPS++)
+* Communication:
+
+  * NRF24L01 (wireless)
+* Interface:
+
+  * Web dashboard (AP mode)
+
+### Receiver (Pro Micro)
+
+* NRF24L01 (receiver)
+* HID Keyboard (opens alert URL)
+
+### Web Layer
+
+* Embedded dashboard (ESP32)
+* Netlify emergency profile page
 
 ---
 
 # 2. ABSTRACT PROGRAM FLOW (SUMMARY)
 
-## MASTER FLOW
+## HIGH-LEVEL FLOW
 
 ```
-BOOT
-  ↓
-INITIALIZE SYSTEM
-  ↓
-START TASKS (FreeRTOS)
-  ↓
-[LOOP RUNS FOREVER]
-    ├─ Sensor Acquisition Task (Core 0)
-    ├─ Signal Processing Task (Core 1)
-    ├─ Web Server Task (Core 1)
-    ↓
-UPDATE UI + LOG DATA + DETECT ANOMALIES
-```
-
----
-
-## REAL-TIME PIPELINE
-
-```
-Sensor Read → Buffer → RMS + FFT → Intensity → JSON → UI + CSV
+BOOT → INIT HARDWARE → CALIBRATION → RUN LOOP
+         ↓
+     READ SENSORS
+         ↓
+  UPDATE STATE MACHINE
+         ↓
+  CHECK ENVIRONMENTAL EVENTS
+         ↓
+  SEND ALERT (NRF + SOS)
+         ↓
+  UPDATE WEB UI
+         ↓
+       REPEAT
 ```
 
 ---
 
-# 3. DETAILED FLOWCHART (ULTRA-DETAILED)
+## CORE LOGIC PIPELINE
+
+### FALL DETECTION PIPELINE
 
 ```
-START
+[IDLE]
+   ↓ (A_m < 0.4g for 100ms)
+[FREEFALL]
+   ↓ (A_m > 3g within 500ms)
+[IMPACT]
+   ↓ (low motion for 2s)
+[STILLNESS]
+   ↓
+[CONFIRMED FALL → ALERT]
+```
 
+✔ ALL stages must pass → eliminates false positives
+
+---
+
+# 3. DETAILED MODULE EXPLANATION
+
+---
+
+# 3.1 SETUP PHASE
+
+## Responsibilities
+
+* Initialize all hardware
+* Configure communication
+* Calibrate sensors
+
+## Steps
+
+```
 setup():
-  Initialize Serial
-  Initialize I2C
-  Configure AD0 pins (sensor selection)
-  Initialize all MPU6050 sensors
+  Start Serial
+  Start GPS UART
+  Initialize I2C (MPU)
+  Wake MPU
+  Calibrate MPU (3 seconds)
   Start WiFi AP
-  Start WebServer
-  Mount LittleFS
-  Open CSV file
-  Create Mutexes
-  Create FreeRTOS Tasks
+  Initialize NRF24
+  Setup WebServer routes
+  Configure GPIO (LED, buzzer)
+```
+
+---
+
+# 3.2 MAIN LOOP EXECUTION
+
+## Loop Cycle Structure
+
+```
+loop():
+  Compute delta time (dt)
+  Handle web requests
+  Read GPS
+  Read IMU
+  Compute acceleration magnitude
+  Run fall detection FSM
+  Run environmental analysis
+  Update SOS alert pattern
+```
+
+---
+
+# 4. SENSOR PROCESSING
+
+---
+
+## 4.1 MPU DATA FLOW
+
+```
+Raw MPU Data → Bias Removal → Physical Units → Orientation Estimation
+```
+
+### Functions
+
+#### readMPU()
+
+* Reads 14 bytes from MPU
+* Extracts:
+
+  * Acceleration (ax, ay, az)
+  * Gyroscope (gx, gy, gz)
+* Applies calibration offsets
+
+---
+
+#### calibrateMPU()
+
+* Collects ~200 samples
+* Computes average bias
+* Adjusts:
+
+  * accel offset
+  * gyro drift
+
+---
+
+#### updateOrientation(dt)
+
+* Uses complementary filter:
+
+  * Gyro = fast response
+  * Accel = stable reference
+
+```
+roll = (1-α)*gyro + α*accel
+pitch = (1-α)*gyro + α*accel
+```
+
+---
+
+## 4.2 ACCELERATION MAGNITUDE
+
+```
+A_m = sqrt(ax² + ay² + az²)
+```
+
+✔ Orientation-independent
+✔ Used for fall detection
+
+---
+
+# 5. FALL DETECTION STATE MACHINE (CRITICAL)
+
+---
+
+## States
+
+| State          | Meaning                  |
+| -------------- | ------------------------ |
+| FS_IDLE        | Monitoring               |
+| FS_FREEFALL    | Low gravity detected     |
+| FS_WAIT_IMPACT | Waiting for spike        |
+| FS_STILLNESS   | Checking unconsciousness |
+| FS_CONFIRMED   | Alert triggered          |
+
+---
+
+## FULL FLOWCHART (DETAILED)
+
+```
+START (FS_IDLE)
+
+IF A_m < 0.4g:
+    → FS_FREEFALL
+    → Start timer
+
+FS_FREEFALL:
+    IF A_m rises early:
+        → FALSE TRIGGER → FS_IDLE
+    IF duration ≥100ms:
+        → FS_WAIT_IMPACT
+
+FS_WAIT_IMPACT:
+    IF A_m > 3g:
+        → IMPACT DETECTED
+        → FS_STILLNESS
+    IF timeout >500ms:
+        → CANCEL → FS_IDLE
+
+FS_STILLNESS:
+    Collect samples for 2 seconds
+
+    Compute standard deviation σ
+
+    IF σ < 0.15:
+        → USER NOT MOVING
+        → FS_CONFIRMED
+    ELSE:
+        → USER MOVING → SAFE
+        → FS_IDLE
+
+FS_CONFIRMED:
+    Send NRF alert
+    Activate SOS
+    Return to FS_IDLE
+```
+
+---
+
+## WHY THIS WORKS (THESIS LOGIC)
+
+* Freefall alone → jumping false positive
+* Impact alone → dropping device
+* Stillness alone → sleeping
+
+✔ COMBINATION = real accident detection
+
+---
+
+# 6. ENVIRONMENTAL ANALYSIS
+
+---
+
+## Purpose
+
+Detect:
+
+* Structural impacts
+* Unstable movement (waves, tumbling)
+
+---
+
+## Method
+
+### Rolling Buffer
+
+* Stores last 50 samples:
+
+  * acceleration magnitude
+  * roll
+  * pitch
+
+---
+
+## Standard Deviation Calculation
+
+```
+σ = sqrt( (Σx²/n) − (Σx/n)² )
+```
+
+---
+
+## Detection Logic
+
+### Ground Shock
+
+```
+High accel variance
+LOW orientation change
+```
+
+→ Indicates sudden impact (e.g., drop)
+
+---
+
+### Wave Motion
+
+```
+Moderate accel variance
+HIGH orientation variation
+```
+
+→ Indicates instability
+
+---
+
+## Actions
+
+```
+IF groundShock OR waveMotion:
+    Send NRF
+    Trigger SOS
+```
+
+---
+
+# 7. NRF COMMUNICATION
+
+---
+
+## Payload Format
+
+```
+"LAT,LNG"
+Example:
+"14.599512,120.984222"
+```
+
+---
+
+## Transmission Flow
+
+```
+ESP32:
+  Format string
+  radio.write()
+
+Receiver:
+  radio.read()
+  Parse coordinates
+  Trigger HID keyboard
+```
+
+---
+
+# 8. RECEIVER (PRO MICRO) FLOW
+
+---
+
+## Logic
+
+```
+WAIT for NRF data
+   ↓
+Read payload
+   ↓
+Validate format
+   ↓
+Construct URL:
+https://danger-monitor-profile.netlify.app/?loc=LAT,LNG
+   ↓
+Simulate keyboard:
+  Ctrl+L
+  Ctrl+A
+  Type URL
+  Press Enter
+```
+
+---
+
+## Result
+
+Browser automatically opens emergency page
+
+---
+
+# 9. SOS ALERT SYSTEM
+
+---
+
+## Pattern
+
+Morse Code: SOS
+
+```
+... --- ...
+```
+
+### Implementation
+
+* Non-blocking timing
+* Array of ON/OFF durations
+
+---
+
+## Logic
+
+```
+startSOSAlert():
+  Initialize pattern index
+  Set first state
 
 loop():
-  Sleep (system is task-driven)
-
---------------------------------------------------------
-
-TASK 1: SENSOR ACQUISITION (Core 0)
-
-LOOP EVERY ~6 ms:
-  FOR each sensor (X,Y,Z):
-    Select sensor via AD0
-    Read MPU6050
-    Convert raw → physical values
-    Compute acceleration magnitude
-
-    Store in:
-      → RMS buffer
-      → FFT buffer
-
-    Lock data mutex:
-      Update shared struct
-    Unlock mutex
-
-    Lock file mutex:
-      Append CSV row
-      Flush if needed
-    Unlock mutex
-
---------------------------------------------------------
-
-TASK 2: SIGNAL PROCESSING (Core 1)
-
-LOOP EVERY 50 ms:
-  FOR each axis:
-    IF enough samples:
-      Compute RMS
-      Compute FFT
-      Compute intensity
-
-      Lock data mutex:
-        Update shared processed values
-      Unlock mutex
-
---------------------------------------------------------
-
-TASK 3: WEB SERVER (Core 1)
-
-LOOP EVERY 50 ms:
-  Handle HTTP requests
-
---------------------------------------------------------
-
-CLIENT SIDE (BROWSER)
-
-EVERY 50 ms:
-  Fetch /data JSON
-  Update:
-    → 3D heatmap
-    → Table
-    → HUD stats
-    → Anomaly detection
-
-END
+  If time reached:
+    Move to next step
+    Toggle LED + buzzer
 ```
 
 ---
 
-# 4. SENSOR SYSTEM (MPU6050)
+# 10. WEB SERVER + UI
 
 ---
 
-## 4.1 MULTIPLEXING (CRITICAL DESIGN)
+## Endpoints
 
-### Problem:
-
-All sensors have SAME I2C address (0x68)
-
-### Solution:
-
-Use AD0 pins to switch addresses
-
-```
-selectSensor(i):
-  Set sensor[i] → LOW (active)
-  Set others → HIGH (inactive)
-```
-
-✔ Only ONE sensor active at a time
+| Route        | Function          |
+| ------------ | ----------------- |
+| /            | Dashboard UI      |
+| /status.json | System data       |
+| /arm         | Enable detection  |
+| /disarm      | Disable detection |
+| /test-nrf    | Manual test       |
 
 ---
 
-## 4.2 DATA ACQUISITION
-
-### readMPU6050()
-
-Steps:
-
-1. Request 14 bytes from MPU
-2. Extract:
-
-   * Acceleration (ax, ay, az)
-   * Gyroscope (gx, gy, gz)
-3. Convert:
-
-   * accel → g (÷16384)
-   * gyro → °/s (÷131)
-
----
-
-## 4.3 ACCELERATION MAGNITUDE
-
-```
-mag = sqrt(ax² + ay² + az²) - 1g
-```
-
-✔ Removes gravity
-✔ Represents vibration strength
-
----
-
-# 5. SIGNAL PROCESSING
-
----
-
-## 5.1 RMS (VIBRATION ENERGY)
-
-```
-RMS = sqrt( Σ(x²) / N )
-```
-
-### Purpose:
-
-* Measures vibration intensity
-* Used for anomaly detection
-
----
-
-## 5.2 FFT (FREQUENCY ANALYSIS)
-
-```
-FFT → dominant frequency
-```
-
-Steps:
-
-1. Apply Hamming window
-2. Perform FFT
-3. Extract peak frequency
-
----
-
-## 5.3 INTENSITY NORMALIZATION
-
-```
-intensity = RMS / MAX_RMS_G
-```
-
-Clamped:
-
-```
-0 → no vibration
-1 → maximum vibration
-```
-
----
-
-# 6. DATA STORAGE SYSTEM (LittleFS)
-
----
-
-## CSV FORMAT
-
-```
-timestamp,axis,ax,ay,az,rms,freq,intensity
-```
-
----
-
-## WRITE LOGIC
-
-```
-Every sensor read:
-  Append row to file
-
-Flush condition:
-  IF bytes > 1024 OR time > 3 sec
-```
-
----
-
-## DOWNLOAD FLOW
-
-```
-User clicks download:
-  Lock file
-  Flush + close file
-  Stream file to browser
-  Delete file
-  Recreate file with header
-  Unlock file
-```
-
-✔ Memory-efficient (no RAM buffering)
-✔ Auto-reset after download
-
----
-
-# 7. MULTI-TASKING (FreeRTOS DESIGN)
-
----
-
-## TASK DISTRIBUTION
-
-| Task       | Core   | Purpose               |
-| ---------- | ------ | --------------------- |
-| Sensor     | Core 0 | Real-time acquisition |
-| Processing | Core 1 | DSP calculations      |
-| Web        | Core 1 | UI handling           |
-
----
-
-## SYNCHRONIZATION
-
-### Mutexes:
-
-```
-gDataMutex → protects sensor data
-gFileMutex → protects file access
-```
-
-✔ Prevents race conditions
-✔ Ensures thread safety
-
----
-
-# 8. WEB SERVER API
-
----
-
-## ROUTES
-
-| Endpoint  | Description |
-| --------- | ----------- |
-| /         | Dashboard   |
-| /data     | JSON data   |
-| /download | CSV file    |
-| /three.js | 3D engine   |
-
----
-
-## JSON STRUCTURE
+## Data JSON Example
 
 ```
 {
-  "nodes":[
-    {
-      "axis":"X",
-      "acc":[ax,ay,az],
-      "gyro":[gx,gy,gz],
-      "rms":0.02,
-      "freq":12.5,
-      "intensity":0.4
-    }
-  ]
+  "armed": true,
+  "lat": 14.599,
+  "lng": 120.984,
+  "roll": 2.3,
+  "pitch": -1.2,
+  "aMag": 1.02,
+  "fallState": 2
 }
 ```
 
 ---
 
-# 9. WEB UI SYSTEM (3D HEATMAP)
+## UI Behavior
+
+* Refresh every ~900 ms
+* Displays:
+
+  * GPS
+  * motion
+  * system status
+  * fall pipeline progress
 
 ---
 
-## VISUAL MODEL
-
-```
-3 PLANES:
-  Floor → X-axis
-  Left Wall → Y-axis
-  Back Wall → Z-axis
-```
+# 11. GPS HANDLING
 
 ---
 
-## GRID
+## Strategy: Last-Known Location
 
 ```
-Each plane = 8×8 tiles
-Total = 64 tiles per plane
+IF GPS valid:
+    update coordinates
+ELSE:
+    keep last valid position
 ```
+
+✔ Ensures location is always available
+✔ Works in GPS dead zones
 
 ---
 
-## INTENSITY PROPAGATION
-
-Gaussian distribution:
-
-```
-center = highest intensity
-edges = lower intensity
-```
+# 12. SYSTEM STATES
 
 ---
 
-## ANIMATION
+## Armed Mode
 
-```
-current_value += (target - current) * smoothing_factor
-```
+* All detections active
+* Alerts allowed
 
-✔ Smooth transitions
-✔ No flickering
+## Disarmed Mode
 
----
-
-# 10. ANOMALY DETECTION
+* FSM disabled
+* Alerts stopped
 
 ---
 
-## THRESHOLDS
-
-```
-WARN  = RMS ≥ 0.08g
-CRIT  = RMS ≥ 0.15g
-```
+# 13. KEY VARIABLES YOU CAN MODIFY
 
 ---
 
-## LOGIC
+## Detection Sensitivity
 
 ```
-IF RMS ≥ CRIT:
-  Show anomaly banner
-  Highlight table
-  Flash UI
+FREEFALL_G        (default 0.40g)
+IMPACT_G          (default 3.0g)
+STILLNESS_STD_MAX (default 0.15g)
 ```
 
 ---
 
-# 11. DATA FLOW SUMMARY
+## Timing
 
 ```
-IMU → Raw Data
-     ↓
-Magnitude Calculation
-     ↓
-RMS Buffer + FFT Buffer
-     ↓
-Signal Processing Task
-     ↓
-Shared Data Struct
-     ↓
-Web JSON + CSV Logging
-     ↓
-UI Visualization
+FREEFALL_DUR_MS
+IMPACT_WINDOW_MS
+STILLNESS_DUR_MS
 ```
 
 ---
 
-# 12. HOW TO MODIFY SYSTEM
-
----
-
-## Change Sampling Rate
+## Environmental Detection
 
 ```
-#define SENSOR_PERIOD_MS
+ACC_STD_DANGER
+ROLL_PITCH_STD
 ```
 
 ---
 
-## Change FFT Resolution
+# 14. HOW TO MODIFY SYSTEM BEHAVIOR
+
+---
+
+## Change Detection Logic
+
+Edit:
 
 ```
-#define FFT_SAMPLES
+switch(fallState)
 ```
 
 ---
 
-## Change Detection Sensitivity
+## Change Alert Behavior
+
+Edit:
 
 ```
-THRESH_WARN
-THRESH_CRIT
-MAX_RMS_G
+startSOSAlert()
+SOS_STEPS[]
+```
+
+---
+
+## Change Communication
+
+Edit:
+
+```
+nrfSendCoords()
 ```
 
 ---
@@ -465,57 +575,40 @@ MAX_RMS_G
 Edit:
 
 ```
-WebServerUI.h
+web_ui.h
 ```
 
 ---
 
-## Change Signal Processing
+## Change Receiver Behavior
 
 Edit:
 
 ```
-Calculations.h
+Keyboard.print()
 ```
 
 ---
 
-## Change Architecture
-
-Edit:
+# 15. FULL SYSTEM ARCHITECTURE
 
 ```
-FreeRTOS task structure
+[MPU6050] ──┐
+            ├─→ ESP32 → FALL DETECTION → NRF24 → Pro Micro → Browser
+[GPS]    ───┘                        ↓
+                                SOS ALERT
+                                ↓
+                          Web Dashboard (AP)
 ```
 
 ---
 
-# 13. DESIGN STRENGTHS
+# 16. FINAL NOTES
 
-✔ Real-time processing (FreeRTOS)
-✔ Memory efficient (LittleFS streaming)
-✔ Scalable (can expand nodes)
-✔ Modular (separate logic layers)
-✔ Visualization-driven analysis
-
----
-
-# 14. FINAL SYSTEM MODEL
-
-```
-[SENSORS]
-   ↓
-[ACQUISITION TASK]
-   ↓
-[BUFFERS]
-   ↓
-[PROCESSING TASK]
-   ↓
-[SHARED MEMORY]
-   ↓
- ├── WEB SERVER → DASHBOARD
- └── FILE SYSTEM → CSV LOG
-```
+✔ Non-blocking design
+✔ Multi-layer detection (robust)
+✔ Modular architecture (easy to expand)
+✔ Thesis-ready logic (high reliability)
 
 ---
 
