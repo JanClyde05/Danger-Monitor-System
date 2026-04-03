@@ -1,6 +1,6 @@
 # SHM SYSTEM – FULL CODE DOCUMENTATION (LLM DESCRIPTION)
 
-### Structural Health Monitoring Firmware v2 (ESP32-S3)
+### Structural Health Monitoring Firmware v2 (ESP32-S3) - By: Jan Clyde T. Talosig
 
 ---
 
