@@ -1,5 +1,5 @@
 # GPS Danger Monitor System – Full Code Documentation (v2.0)
-### BY: JAN CLYDE T. TALOSIG
+##### BY: JAN CLYDE T. TALOSIG
 ---
 
 # 1. SYSTEM OVERVIEW
