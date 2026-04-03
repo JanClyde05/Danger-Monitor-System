@@ -252,9 +252,11 @@ void handleDisarm() { armed=false; stopSOSAlert(); lastEvent="System disarmed";
                       server.send(200,"text/plain","disarmed"); }
 void handleTestNRF(){
   if(!nrfReady){ server.send(500,"text/plain","NRF not ready"); return; }
-  if(!hasFix)  { lastEvent="Test – no GPS fix";
-                 server.send(409,"text/plain","No GPS fix yet"); return; }
-  bool ok = nrfSendCoords(lastLat,lastLng,"Manual test");
+  /* Use last known coords if available, otherwise send 0,0 so the RF link
+     can still be tested independently of GPS lock status.               */
+  float testLat = hasFix ? lastLat : 0.0f;
+  float testLng = hasFix ? lastLng : 0.0f;
+  bool ok = nrfSendCoords(testLat, testLng, hasFix ? "Manual test" : "Manual test (no fix)");
   server.send(ok?200:500,"text/plain", ok?"NRF test OK":"NRF test failed");
 }
 
@@ -458,10 +460,6 @@ void loop(){
       if(on) buzzerOn(3000); else buzzerOff();
       sosNextChange = millis() + SOS_STEPS[sosIdx].ms;
     }
-  } else if(!armed && alertActive){
-    stopSOSAlert();
-  }
-}
   } else if(!armed && alertActive){
     stopSOSAlert();
   }

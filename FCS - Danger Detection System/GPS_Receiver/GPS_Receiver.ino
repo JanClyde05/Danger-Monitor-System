@@ -51,7 +51,7 @@ void setup(){
   }
 
   radio.setPayloadSize(NRF_PAYLOAD);       // ← fixed payload, matches ESP32
-  radio.openReadingPipe(0, NRF_ADDRESS);
+  radio.openReadingPipe(0, NRF_ADDRESS);   // pipe 1 – pipe 0 is reserved for ACK handling
   radio.setPALevel(RF24_PA_HIGH);
   radio.startListening();
 
